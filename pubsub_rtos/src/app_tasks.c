@@ -49,10 +49,10 @@ static void prvSensorTask(void *pvParams)
         evt.payload[0] = temperature;
         Bus_Publish(&evt);
 
-        printf("[SENSOR] Published temp = %d°C\n", temperature);
+        //printf("[SENSOR] Published temp = %d°C\n", temperature);
         sendHeartbeat(TASK_ID_SENSOR);
 
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -67,7 +67,7 @@ static void prvButtonTask(void *pvParams)
     printf("[BUTTON] Started (STUB – simulating press every 3s)\n");
 
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        vTaskDelay(pdMS_TO_TICKS(300));
 
         Event_t evt = {
             .topic     = TOPIC_BUTTON_PRESS,
@@ -77,7 +77,7 @@ static void prvButtonTask(void *pvParams)
         evt.payload[0] = 0; /* button 0 */
         Bus_Publish(&evt);
 
-        printf("[BUTTON] Button press published\n");
+        //printf("[BUTTON] Button press published\n");
         sendHeartbeat(TASK_ID_BUTTON);
     }
 }
@@ -97,9 +97,10 @@ static void prvDisplayTask(void *pvParams)
     for (;;) {
         if (xQueueReceive(s_displayQueue, &evt, pdMS_TO_TICKS(600)) == pdPASS) {
             if (evt.topic == TOPIC_TEMP_UPDATE) {
-                printf("[DISPLAY] ┌─────────────────────┐\n");
-                printf("[DISPLAY] │  Temperature: %3d°C  │\n", evt.payload[0]);
-                printf("[DISPLAY] └─────────────────────┘\n");
+                // printf("[DISPLAY] ┌─────────────────────┐\n");
+                // printf("[DISPLAY] │  Temperature: %3d°C │\n", evt.payload[0]);
+                // printf("[DISPLAY] └─────────────────────┘\n");
+                vTaskDelay(pdMS_TO_TICKS(2000));
             }
         }
         sendHeartbeat(TASK_ID_DISPLAY);
@@ -127,11 +128,12 @@ static void prvLoggerTask(void *pvParams)
         if (xQueueReceive(s_loggerQueue, &evt, pdMS_TO_TICKS(1000)) == pdPASS) {
             /* Skip heartbeats to reduce log noise */
             if (evt.topic != TOPIC_HEARTBEAT) {
-                printf("[LOGGER] #%04lu t=%lu topic=%-14s payload[0]=%d\n",
-                       (unsigned long)++logCount,
-                       (unsigned long)evt.timestamp,
-                       topicName[evt.topic],
-                       evt.payload[0]);
+                // printf("[LOGGER] #%04lu t=%lu topic=%-14s payload[0]=%d\n",
+                //        (unsigned long)++logCount,
+                //        (unsigned long)evt.timestamp,
+                //        topicName[evt.topic],
+                //        evt.payload[0]);
+                vTaskDelay(pdMS_TO_TICKS(3000));
             }
         }
         sendHeartbeat(TASK_ID_LOGGER);
@@ -154,15 +156,16 @@ static void prvAlertTask(void *pvParams)
     printf("[ALERT] Started. Threshold = %d°C\n", TEMP_ALERT_THRESHOLD);
 
     for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
         if (xQueueReceive(s_alertQueue, &evt, pdMS_TO_TICKS(600)) == pdPASS) {
             if (evt.topic == TOPIC_TEMP_UPDATE) {
                 if (evt.payload[0] > TEMP_ALERT_THRESHOLD) {
-                    printf("[ALERT] *** HIGH TEMP ALERT: %d°C > %d°C ***\n",
-                           evt.payload[0], TEMP_ALERT_THRESHOLD);
+                    // printf("[ALERT] *** HIGH TEMP ALERT: %d°C > %d°C ***\n",
+                    //        evt.payload[0], TEMP_ALERT_THRESHOLD);
                 }
             } else if (evt.topic == TOPIC_SYSTEM_FAULT) {
-                printf("[ALERT] *** SYSTEM FAULT: task_id=%d stalled ***\n",
-                       evt.payload[0]);
+                // printf("[ALERT] *** SYSTEM FAULT: task_id=%d stalled ***\n",
+                //        evt.payload[0]);
             }
         }
         sendHeartbeat(TASK_ID_ALERT);
@@ -178,7 +181,7 @@ static void prvStatsTask(void *pvParams)
     printf("[STATS] Started\n");
 
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
 
         printf("\n[STATS] ── Bus Statistics ─────────────────────────\n");
         printf("[STATS]   Total dropped events : %lu\n",
@@ -201,9 +204,9 @@ static void prvStatsTask(void *pvParams)
 void AppTasks_Start(void)
 {
     /* Create subscriber queues */
-    s_displayQueue = xQueueCreate(TASK_QUEUE_DEPTH, sizeof(Event_t));
+    s_displayQueue = xQueueCreate(TASK_QUEUE_DEPTH*10, sizeof(Event_t));
     s_loggerQueue  = xQueueCreate(TASK_QUEUE_DEPTH * 2, sizeof(Event_t));
-    s_alertQueue   = xQueueCreate(TASK_QUEUE_DEPTH, sizeof(Event_t));
+    s_alertQueue   = xQueueCreate(TASK_QUEUE_DEPTH*5, sizeof(Event_t));
 
     configASSERT(s_displayQueue && s_loggerQueue && s_alertQueue);
 

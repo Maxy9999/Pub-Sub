@@ -52,7 +52,7 @@ BaseType_t Bus_Subscribe(EventTopic_t topic, QueueHandle_t rxQueue)
     return pdPASS;
 }
 
-/* ── Bus_Publish ──────────────────────────────────────────────────────── */
+/* ── Bus_Publish ──────────────────────────────────────────────.────────── */
 BaseType_t Bus_Publish(const Event_t *event)
 {
     configASSERT(event != NULL);
@@ -66,10 +66,10 @@ BaseType_t Bus_Publish(const Event_t *event)
     for (uint8_t i = 0; i < entry->count; i++) {
         /* Non-blocking: never stall publisher for a slow subscriber */
         if (xQueueSend(entry->subscribers[i], event, 0) != pdPASS) {
-            s_dropCount++;
-            printf("[BUS] WARN: dropped event topic=%d for subscriber %d "
-                   "(total drops=%lu)\n",
-                   event->topic, i, (unsigned long)s_dropCount);
+            s_dropCount++; 
+            // printf("[BUS] WARN: dropped event topic=%d for subscriber %d "
+            //        "(total drops=%lu)\n",
+            //        event->topic, i, (unsigned long)s_dropCount);
             result = pdFAIL;
         }
     }
