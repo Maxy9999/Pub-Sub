@@ -10,111 +10,360 @@
 #include "watchdog_task.h"
 #include "app_tasks.h"
 
-/* ── Shared queue depth ───────────────────────────────────────────────── */
-#define TASK_QUEUE_DEPTH    8
+#define TASK_QUEUE_DEPTH        12
+#define TEMP_THRESHOLD_DEFAULT  35U
+#define VOLTAGE_LOW_THRESHOLD  33U
 
-/* ── Helper: send heartbeat ───────────────────────────────────────────── */
-static inline void sendHeartbeat(TaskID_t id)
+static QueueHandle_t s_loggerQueue;
+static QueueHandle_t s_storageQueue;
+static QueueHandle_t s_cloudQueue;
+static QueueHandle_t s_configQueue;
+static QueueHandle_t s_healthQueue;
+
+static uint8_t s_tempThreshold = TEMP_THRESHOLD_DEFAULT;
+
+static const char *topicName[] = {
+    "TEMP_UPDATE",
+    "BUTTON_PRESS",
+    "SYSTEM_FAULT",
+    "HEARTBEAT",
+    "SENSOR_READING",
+    "THRESHOLD_CROSSED",
+    "DEVICE_STATUS",
+    "CONFIG_UPDATE",
+    "COMMAND_RECEIVED",
+    "ACTUATOR_COMMAND",
+    "ACTUATOR_STATUS",
+    "STORAGE_LOG",
+    "NETWORK_STATUS",
+    "DIAGNOSTIC_REPORT",
+    "POWER_EVENT",
+    "OTA_EVENT",
+    "SECURITY_EVENT"
+};
+
+static const char *topicToString(EventTopic_t topic)
 {
-    Event_t hb = {
-        .topic     = TOPIC_HEARTBEAT,
+    if (topic < TOPIC_MAX) {
+        return topicName[topic];
+    }
+    return "UNKNOWN";
+}
+
+static void publishSimple(EventTopic_t topic, uint8_t value0, uint8_t value1)
+{
+    Event_t evt = {
+        .topic     = topic,
         .timestamp = xTaskGetTickCount(),
         .payload   = {0}
     };
-    hb.payload[0] = (uint8_t)id;
-    Bus_Publish(&hb);
+
+    evt.payload[0] = value0;
+    evt.payload[1] = value1;
+    Bus_Publish(&evt);
 }
 
-/* ════════════════════════════════════════════════════════════════════════
- * SENSOR TASK  – publishes TOPIC_TEMP_UPDATE every 500 ms
- * Payload: payload[0] = temperature (simulated 0–50 °C)
- * ════════════════════════════════════════════════════════════════════════ */
-static void prvSensorTask(void *pvParams)
+static inline void sendHeartbeat(TaskID_t id)
+{
+    publishSimple(TOPIC_HEARTBEAT, (uint8_t)id, 0);
+}
+
+/*
+ * SensorManagerTask
+ * Publishes legacy TEMP_UPDATE plus richer SENSOR_READING events.
+ * Payload for SENSOR_READING: [0]=sensor id, [1]=value, [2]=unit id.
+ */
+static void prvSensorManagerTask(void *pvParams)
 {
     (void)pvParams;
-    uint8_t temperature = 22;
+    uint8_t temperature = 25;
+    uint8_t humidity = 45;
 
-    printf("[SENSOR] Started\n");
+    printf("[SENSOR_MANAGER] Started\n");
 
     for (;;) {
-        /* Simulate temperature drift */
-        int delta = (rand() % 3) - 1;   /* -1, 0, or +1 */
-        temperature = (uint8_t)((temperature + delta + 51) % 51);
+        int tempDelta = (rand() % 5) - 2;
+        int humidityDelta = (rand() % 7) - 3;
 
-        Event_t evt = {
-            .topic     = TOPIC_TEMP_UPDATE,
+        temperature = (uint8_t)((temperature + tempDelta + 51) % 51);
+        humidity = (uint8_t)((humidity + humidityDelta + 101) % 101);
+
+        publishSimple(TOPIC_TEMP_UPDATE, temperature, 0);
+
+        Event_t tempEvt = {
+            .topic     = TOPIC_SENSOR_READING,
             .timestamp = xTaskGetTickCount(),
             .payload   = {0}
         };
-        evt.payload[0] = temperature;
-        Bus_Publish(&evt);
+        tempEvt.payload[0] = 1; /* temperature sensor */
+        tempEvt.payload[1] = temperature;
+        tempEvt.payload[2] = 1; /* degree C */
+        Bus_Publish(&tempEvt);
 
-        printf("[SENSOR] Published temp = %d°C\n", temperature);
-        sendHeartbeat(TASK_ID_SENSOR);
+        Event_t humidityEvt = tempEvt;
+        humidityEvt.timestamp = xTaskGetTickCount();
+        humidityEvt.payload[0] = 2; /* humidity sensor */
+        humidityEvt.payload[1] = humidity;
+        humidityEvt.payload[2] = 2; /* percent RH */
+        Bus_Publish(&humidityEvt);
 
-        vTaskDelay(pdMS_TO_TICKS(500));
+        if (temperature > s_tempThreshold) {
+            publishSimple(TOPIC_THRESHOLD_CROSSED, 1, temperature);
+            printf("[SENSOR_MANAGER] Threshold crossed: temp=%u limit=%u\n",
+                   temperature, s_tempThreshold);
+        } else {
+            printf("[SENSOR_MANAGER] temp=%uC humidity=%u%%\n",
+                   temperature, humidity);
+        }
+
+        sendHeartbeat(TASK_ID_SENSOR_MANAGER);
+        vTaskDelay(pdMS_TO_TICKS(700));
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════════
- * BUTTON TASK  – stub: simulates a button press every 3 s
- * On real Pi, replace vTaskDelay loop with GPIO interrupt + semaphore.
- * Payload: payload[0] = button ID (always 0 for now)
- * ════════════════════════════════════════════════════════════════════════ */
-static void prvButtonTask(void *pvParams)
+/*
+ * CommandTask
+ * Simulates commands from UART/CLI/MQTT. It publishes command, config,
+ * actuator, OTA, security, and legacy button events.
+ */
+static void prvCommandTask(void *pvParams)
 {
     (void)pvParams;
-    printf("[BUTTON] Started (STUB – simulating press every 3s)\n");
+    uint8_t commandId = 0;
+
+    printf("[COMMAND] Started\n");
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
+        commandId = (uint8_t)((commandId + 1) % 6);
 
-        Event_t evt = {
-            .topic     = TOPIC_BUTTON_PRESS,
-            .timestamp = xTaskGetTickCount(),
-            .payload   = {0}
-        };
-        evt.payload[0] = 0; /* button 0 */
-        Bus_Publish(&evt);
+        publishSimple(TOPIC_COMMAND_RECEIVED, commandId, 0);
 
-        printf("[BUTTON] Button press published\n");
-        sendHeartbeat(TASK_ID_BUTTON);
+        switch (commandId) {
+        case 0:
+            publishSimple(TOPIC_CONFIG_UPDATE, 1, 38); /* temp threshold */
+            printf("[COMMAND] SET_TEMP_THRESHOLD 38\n");
+            break;
+        case 1:
+            publishSimple(TOPIC_ACTUATOR_COMMAND, 1, 1); /* fan on */
+            printf("[COMMAND] FAN_ON\n");
+            break;
+        case 2:
+            publishSimple(TOPIC_BUTTON_PRESS, 0, 0);
+            printf("[COMMAND] Simulated local button press\n");
+            break;
+        case 3:
+            publishSimple(TOPIC_OTA_EVENT, 1, 0); /* OTA start */
+            printf("[COMMAND] OTA_START\n");
+            break;
+        case 4:
+            publishSimple(TOPIC_SECURITY_EVENT, 1, 0); /* invalid token */
+            printf("[COMMAND] Invalid command token detected\n");
+            break;
+        default:
+            publishSimple(TOPIC_ACTUATOR_STATUS, 1, 0); /* fan idle/ok */
+            printf("[COMMAND] GET_ACTUATOR_STATUS\n");
+            break;
+        }
+
+        sendHeartbeat(TASK_ID_COMMAND);
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════════
- * DISPLAY TASK  – subscribes to TOPIC_TEMP_UPDATE
- * ════════════════════════════════════════════════════════════════════════ */
-static QueueHandle_t s_displayQueue;
+/* NetworkTask publishes link/MQTT state and simulates cloud commands. */
+static void prvNetworkTask(void *pvParams)
+{
+    (void)pvParams;
+    uint8_t online = 1;
 
-static void prvDisplayTask(void *pvParams)
+    printf("[NETWORK] Started\n");
+
+    for (;;) {
+        publishSimple(TOPIC_NETWORK_STATUS, online, online ? 1 : 0);
+        printf("[NETWORK] link=%s mqtt=%s\n",
+               online ? "up" : "down",
+               online ? "connected" : "disconnected");
+
+        if (online) {
+            publishSimple(TOPIC_COMMAND_RECEIVED, 10, 0); /* cloud poll */
+        }
+
+        online = (uint8_t)!online;
+        sendHeartbeat(TASK_ID_NETWORK);
+        vTaskDelay(pdMS_TO_TICKS(6000));
+    }
+}
+
+/* PowerMonitorTask simulates supply voltage and low-power warnings. */
+static void prvPowerMonitorTask(void *pvParams)
+{
+    (void)pvParams;
+    uint8_t voltageDecivolts = 37;
+
+    printf("[POWER] Started\n");
+
+    for (;;) {
+        int delta = (rand() % 3) - 1;
+        voltageDecivolts = (uint8_t)((voltageDecivolts + delta + 50) % 50);
+        if (voltageDecivolts < 30) {
+            voltageDecivolts = 37;
+        }
+
+        Event_t reading = {
+            .topic     = TOPIC_SENSOR_READING,
+            .timestamp = xTaskGetTickCount(),
+            .payload   = {0}
+        };
+        reading.payload[0] = 3; /* supply voltage */
+        reading.payload[1] = voltageDecivolts;
+        reading.payload[2] = 3; /* decivolts */
+        Bus_Publish(&reading);
+
+        if (voltageDecivolts < VOLTAGE_LOW_THRESHOLD) {
+            publishSimple(TOPIC_POWER_EVENT, 1, voltageDecivolts);
+            printf("[POWER] LOW_BATTERY voltage=%u.%uV\n",
+                   voltageDecivolts / 10, voltageDecivolts % 10);
+        } else {
+            publishSimple(TOPIC_POWER_EVENT, 0, voltageDecivolts);
+        }
+
+        sendHeartbeat(TASK_ID_POWER_MONITOR);
+        vTaskDelay(pdMS_TO_TICKS(2500));
+    }
+}
+
+/* DiagnosticsTask publishes health counters for other tasks to consume. */
+static void prvDiagnosticsTask(void *pvParams)
+{
+    (void)pvParams;
+
+    printf("[DIAGNOSTICS] Started\n");
+
+    for (;;) {
+        Event_t report = {
+            .topic     = TOPIC_DIAGNOSTIC_REPORT,
+            .timestamp = xTaskGetTickCount(),
+            .payload   = {0}
+        };
+        report.payload[0] = (uint8_t)Bus_GetDropCount();
+        report.payload[1] = (uint8_t)uxQueueMessagesWaiting(s_loggerQueue);
+        report.payload[2] = (uint8_t)uxQueueMessagesWaiting(s_storageQueue);
+        report.payload[3] = (uint8_t)uxQueueMessagesWaiting(s_cloudQueue);
+        Bus_Publish(&report);
+
+        printf("[DIAGNOSTICS] drops=%u loggerQ=%u storageQ=%u cloudQ=%u\n",
+               report.payload[0], report.payload[1],
+               report.payload[2], report.payload[3]);
+
+        sendHeartbeat(TASK_ID_DIAGNOSTICS);
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+}
+
+/* StorageTask persists important events and emits a STORAGE_LOG summary. */
+static void prvStorageTask(void *pvParams)
+{
+    (void)pvParams;
+    Event_t evt;
+    uint32_t storedCount = 0;
+
+    printf("[STORAGE] Started\n");
+
+    for (;;) {
+        if (xQueueReceive(s_storageQueue, &evt, pdMS_TO_TICKS(1000)) == pdPASS) {
+            storedCount++;
+            printf("[STORAGE] stored #%lu topic=%s value=%u\n",
+                   (unsigned long)storedCount,
+                   topicToString(evt.topic),
+                   evt.payload[0]);
+
+            if ((storedCount % 5U) == 0U) {
+                publishSimple(TOPIC_STORAGE_LOG, (uint8_t)storedCount, 0);
+            }
+        }
+        sendHeartbeat(TASK_ID_STORAGE);
+    }
+}
+
+/* CloudTask uploads telemetry/status and publishes cloud sync status. */
+static void prvCloudTask(void *pvParams)
+{
+    (void)pvParams;
+    Event_t evt;
+    uint32_t uploadCount = 0;
+
+    printf("[CLOUD] Started\n");
+
+    for (;;) {
+        if (xQueueReceive(s_cloudQueue, &evt, pdMS_TO_TICKS(1200)) == pdPASS) {
+            uploadCount++;
+            printf("[CLOUD] upload #%lu topic=%s value=%u\n",
+                   (unsigned long)uploadCount,
+                   topicToString(evt.topic),
+                   evt.payload[0]);
+
+            if (evt.topic == TOPIC_ACTUATOR_COMMAND) {
+                publishSimple(TOPIC_ACTUATOR_STATUS, evt.payload[0], 1);
+            }
+        }
+        sendHeartbeat(TASK_ID_CLOUD);
+    }
+}
+
+/* ConfigManagerTask applies runtime configuration changes. */
+static void prvConfigManagerTask(void *pvParams)
 {
     (void)pvParams;
     Event_t evt;
 
-    printf("[DISPLAY] Started\n");
+    printf("[CONFIG] Started\n");
 
     for (;;) {
-        if (xQueueReceive(s_displayQueue, &evt, pdMS_TO_TICKS(600)) == pdPASS) {
-            if (evt.topic == TOPIC_TEMP_UPDATE) {
-                printf("[DISPLAY] ┌─────────────────────┐\n");
-                printf("[DISPLAY] │  Temperature: %3d°C  │\n", evt.payload[0]);
-                printf("[DISPLAY] └─────────────────────┘\n");
+        if (xQueueReceive(s_configQueue, &evt, pdMS_TO_TICKS(1000)) == pdPASS) {
+            if ((evt.topic == TOPIC_CONFIG_UPDATE) && (evt.payload[0] == 1)) {
+                s_tempThreshold = evt.payload[1];
+                publishSimple(TOPIC_DEVICE_STATUS, 1, s_tempThreshold);
+                printf("[CONFIG] Applied temp threshold=%u\n", s_tempThreshold);
             }
         }
-        sendHeartbeat(TASK_ID_DISPLAY);
+        sendHeartbeat(TASK_ID_CONFIG_MANAGER);
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════════
- * LOGGER TASK  – subscribes to ALL topics, writes log lines
- * ════════════════════════════════════════════════════════════════════════ */
-static QueueHandle_t s_loggerQueue;
+/* HealthManagerTask converts raw health/fault signals into device state. */
+static void prvHealthManagerTask(void *pvParams)
+{
+    (void)pvParams;
+    Event_t evt;
+    uint8_t deviceState = 0; /* 0=OK, 1=degraded, 2=fault */
 
-static const char *topicName[] = {
-    "TEMP_UPDATE", "BUTTON_PRESS", "SYSTEM_FAULT", "HEARTBEAT"
-};
+    printf("[HEALTH] Started\n");
 
+    for (;;) {
+        if (xQueueReceive(s_healthQueue, &evt, pdMS_TO_TICKS(1000)) == pdPASS) {
+            switch (evt.topic) {
+            case TOPIC_SYSTEM_FAULT:
+            case TOPIC_SECURITY_EVENT:
+                deviceState = 2;
+                break;
+            case TOPIC_POWER_EVENT:
+            case TOPIC_NETWORK_STATUS:
+            case TOPIC_THRESHOLD_CROSSED:
+                deviceState = evt.payload[0] ? 1 : 0;
+                break;
+            default:
+                break;
+            }
+
+            publishSimple(TOPIC_DEVICE_STATUS, deviceState, evt.payload[0]);
+            printf("[HEALTH] state=%u reason=%s value=%u\n",
+                   deviceState, topicToString(evt.topic), evt.payload[0]);
+        }
+        sendHeartbeat(TASK_ID_HEALTH_MANAGER);
+    }
+}
+
+/* LoggerTask subscribes to every topic and prints compact trace lines. */
 static void prvLoggerTask(void *pvParams)
 {
     (void)pvParams;
@@ -125,103 +374,72 @@ static void prvLoggerTask(void *pvParams)
 
     for (;;) {
         if (xQueueReceive(s_loggerQueue, &evt, pdMS_TO_TICKS(1000)) == pdPASS) {
-            /* Skip heartbeats to reduce log noise */
             if (evt.topic != TOPIC_HEARTBEAT) {
-                printf("[LOGGER] #%04lu t=%lu topic=%-14s payload[0]=%d\n",
+                printf("[LOGGER] #%04lu t=%lu topic=%-19s p0=%u p1=%u p2=%u\n",
                        (unsigned long)++logCount,
                        (unsigned long)evt.timestamp,
-                       topicName[evt.topic],
-                       evt.payload[0]);
+                       topicToString(evt.topic),
+                       evt.payload[0], evt.payload[1], evt.payload[2]);
             }
         }
         sendHeartbeat(TASK_ID_LOGGER);
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════════
- * ALERT TASK  – subscribes to TOPIC_TEMP_UPDATE & TOPIC_SYSTEM_FAULT
- * Fires alert if temp > 35°C
- * ════════════════════════════════════════════════════════════════════════ */
-#define TEMP_ALERT_THRESHOLD    35
-
-static QueueHandle_t s_alertQueue;
-
-static void prvAlertTask(void *pvParams)
+static void subscribeLoggerToAllTopics(void)
 {
-    (void)pvParams;
-    Event_t evt;
-
-    printf("[ALERT] Started. Threshold = %d°C\n", TEMP_ALERT_THRESHOLD);
-
-    for (;;) {
-        if (xQueueReceive(s_alertQueue, &evt, pdMS_TO_TICKS(600)) == pdPASS) {
-            if (evt.topic == TOPIC_TEMP_UPDATE) {
-                if (evt.payload[0] > TEMP_ALERT_THRESHOLD) {
-                    printf("[ALERT] *** HIGH TEMP ALERT: %d°C > %d°C ***\n",
-                           evt.payload[0], TEMP_ALERT_THRESHOLD);
-                }
-            } else if (evt.topic == TOPIC_SYSTEM_FAULT) {
-                printf("[ALERT] *** SYSTEM FAULT: task_id=%d stalled ***\n",
-                       evt.payload[0]);
-            }
+    for (EventTopic_t topic = TOPIC_TEMP_UPDATE; topic < TOPIC_MAX; topic++) {
+        if (topic != TOPIC_HEARTBEAT) {
+            Bus_Subscribe(topic, s_loggerQueue);
         }
-        sendHeartbeat(TASK_ID_ALERT);
     }
 }
 
-/* ════════════════════════════════════════════════════════════════════════
- * STATS TASK  – prints bus & queue stats every 5 s
- * ════════════════════════════════════════════════════════════════════════ */
-static void prvStatsTask(void *pvParams)
-{
-    (void)pvParams;
-    printf("[STATS] Started\n");
-
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(5000));
-
-        printf("\n[STATS] ── Bus Statistics ─────────────────────────\n");
-        printf("[STATS]   Total dropped events : %lu\n",
-               (unsigned long)Bus_GetDropCount());
-        printf("[STATS]   Display queue waiting: %lu\n",
-               (unsigned long)uxQueueMessagesWaiting(s_displayQueue));
-        printf("[STATS]   Logger queue waiting : %lu\n",
-               (unsigned long)uxQueueMessagesWaiting(s_loggerQueue));
-        printf("[STATS]   Alert queue waiting  : %lu\n",
-               (unsigned long)uxQueueMessagesWaiting(s_alertQueue));
-        printf("[STATS] ──────────────────────────────────────────────\n\n");
-
-        sendHeartbeat(TASK_ID_STATS);
-    }
-}
-
-/* ════════════════════════════════════════════════════════════════════════
- * AppTasks_Start  – create all queues, subscribe, spawn tasks
- * ════════════════════════════════════════════════════════════════════════ */
 void AppTasks_Start(void)
 {
-    /* Create subscriber queues */
-    s_displayQueue = xQueueCreate(TASK_QUEUE_DEPTH, sizeof(Event_t));
-    s_loggerQueue  = xQueueCreate(TASK_QUEUE_DEPTH * 2, sizeof(Event_t));
-    s_alertQueue   = xQueueCreate(TASK_QUEUE_DEPTH, sizeof(Event_t));
+    s_loggerQueue = xQueueCreate(TASK_QUEUE_DEPTH * 3, sizeof(Event_t));
+    s_storageQueue = xQueueCreate(TASK_QUEUE_DEPTH * 2, sizeof(Event_t));
+    s_cloudQueue = xQueueCreate(TASK_QUEUE_DEPTH * 2, sizeof(Event_t));
+    s_configQueue = xQueueCreate(TASK_QUEUE_DEPTH, sizeof(Event_t));
+    s_healthQueue = xQueueCreate(TASK_QUEUE_DEPTH * 2, sizeof(Event_t));
 
-    configASSERT(s_displayQueue && s_loggerQueue && s_alertQueue);
+    configASSERT(s_loggerQueue && s_storageQueue && s_cloudQueue &&
+                 s_configQueue && s_healthQueue);
 
-    /* Subscribe to topics */
-    Bus_Subscribe(TOPIC_TEMP_UPDATE,  s_displayQueue);
+    subscribeLoggerToAllTopics();
 
-    Bus_Subscribe(TOPIC_TEMP_UPDATE,  s_loggerQueue);
-    Bus_Subscribe(TOPIC_BUTTON_PRESS, s_loggerQueue);
-    Bus_Subscribe(TOPIC_SYSTEM_FAULT, s_loggerQueue);
+    Bus_Subscribe(TOPIC_SENSOR_READING,      s_storageQueue);
+    Bus_Subscribe(TOPIC_THRESHOLD_CROSSED,   s_storageQueue);
+    Bus_Subscribe(TOPIC_SYSTEM_FAULT,        s_storageQueue);
+    Bus_Subscribe(TOPIC_SECURITY_EVENT,      s_storageQueue);
+    Bus_Subscribe(TOPIC_ACTUATOR_STATUS,     s_storageQueue);
+    Bus_Subscribe(TOPIC_DIAGNOSTIC_REPORT,   s_storageQueue);
 
-    Bus_Subscribe(TOPIC_TEMP_UPDATE,  s_alertQueue);
-    Bus_Subscribe(TOPIC_SYSTEM_FAULT, s_alertQueue);
+    Bus_Subscribe(TOPIC_SENSOR_READING,      s_cloudQueue);
+    Bus_Subscribe(TOPIC_DEVICE_STATUS,       s_cloudQueue);
+    Bus_Subscribe(TOPIC_SYSTEM_FAULT,        s_cloudQueue);
+    Bus_Subscribe(TOPIC_DIAGNOSTIC_REPORT,   s_cloudQueue);
+    Bus_Subscribe(TOPIC_ACTUATOR_STATUS,     s_cloudQueue);
+    Bus_Subscribe(TOPIC_ACTUATOR_COMMAND,    s_cloudQueue);
+    Bus_Subscribe(TOPIC_NETWORK_STATUS,      s_cloudQueue);
 
-    /* Spawn tasks (priority 1=low, higher = more urgent) */
-    xTaskCreate(prvSensorTask,  "Sensor",  configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);
-    xTaskCreate(prvButtonTask,  "Button",  configMINIMAL_STACK_SIZE * 4, NULL, 4, NULL);
-    xTaskCreate(prvDisplayTask, "Display", configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
-    xTaskCreate(prvLoggerTask,  "Logger",  configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
-    xTaskCreate(prvAlertTask,   "Alert",   configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);
-    xTaskCreate(prvStatsTask,   "Stats",   configMINIMAL_STACK_SIZE * 4, NULL, 1, NULL);
+    Bus_Subscribe(TOPIC_CONFIG_UPDATE,       s_configQueue);
+
+    Bus_Subscribe(TOPIC_SYSTEM_FAULT,        s_healthQueue);
+    Bus_Subscribe(TOPIC_THRESHOLD_CROSSED,   s_healthQueue);
+    Bus_Subscribe(TOPIC_NETWORK_STATUS,      s_healthQueue);
+    Bus_Subscribe(TOPIC_POWER_EVENT,         s_healthQueue);
+    Bus_Subscribe(TOPIC_DIAGNOSTIC_REPORT,   s_healthQueue);
+    Bus_Subscribe(TOPIC_SECURITY_EVENT,      s_healthQueue);
+
+    xTaskCreate(prvSensorManagerTask, "SensorMgr", configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);
+    xTaskCreate(prvCommandTask,       "Command",   configMINIMAL_STACK_SIZE * 4, NULL, 4, NULL);
+    xTaskCreate(prvNetworkTask,       "Network",   configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
+    xTaskCreate(prvPowerMonitorTask,  "Power",     configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);
+    xTaskCreate(prvDiagnosticsTask,   "Diag",      configMINIMAL_STACK_SIZE * 4, NULL, 1, NULL);
+    xTaskCreate(prvStorageTask,       "Storage",   configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
+    xTaskCreate(prvCloudTask,         "Cloud",     configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
+    xTaskCreate(prvConfigManagerTask, "Config",    configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
+    xTaskCreate(prvHealthManagerTask, "Health",    configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);
+    xTaskCreate(prvLoggerTask,        "Logger",    configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
 }
