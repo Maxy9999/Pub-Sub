@@ -8,7 +8,7 @@
 #include "event_bus.h"
 #include "watchdog_task.h"
 
-#define WATCHDOG_QUEUE_DEPTH    16
+#define WATCHDOG_QUEUE_DEPTH    64
 #define WATCHDOG_CHECK_PERIOD   pdMS_TO_TICKS(200)
 #define WATCHDOG_TIMEOUT_TICKS  pdMS_TO_TICKS(WATCHDOG_TIMEOUT_MS)
 
@@ -18,11 +18,12 @@ static QueueHandle_t s_watchdogQueue;
 static TickType_t s_lastSeen[TASK_ID_MAX];
 
 static const char *taskName[] = {
-    "SensorTask", "ButtonTask", "DisplayTask",
-    "LoggerTask",  "AlertTask",  "StatsTask"
+    "SensorManager", "Command", "Network", "PowerMonitor",
+    "Diagnostics", "Storage", "Cloud", "ConfigManager",
+    "HealthManager", "Logger"
 };
 
-/* ── Watchdog task body ───────────────────────────────────────────────── */
+/* -- Watchdog task body ------------------------------------------------- */
 static void prvWatchdogTask(void *pvParams)
 {
     (void)pvParams;
@@ -73,7 +74,7 @@ static void prvWatchdogTask(void *pvParams)
     }
 }
 
-/* ── Public start function ────────────────────────────────────────────── */
+/* -- Public start function --------------------------------------------- */
 void WatchdogTask_Start(void)
 {
     s_watchdogQueue = xQueueCreate(WATCHDOG_QUEUE_DEPTH, sizeof(Event_t));
