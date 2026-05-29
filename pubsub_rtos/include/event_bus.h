@@ -23,6 +23,7 @@ typedef enum {
     TOPIC_POWER_EVENT,
     TOPIC_OTA_EVENT,
     TOPIC_SECURITY_EVENT,
+    TOPIC_FRAME_READY,
     TOPIC_MAX           /* always last - used as array size */
 } EventTopic_t;
 
@@ -32,8 +33,21 @@ typedef enum {
 typedef struct {
     EventTopic_t topic;
     TickType_t   timestamp;              /* xTaskGetTickCount() at publish */
+    uint32_t     eventId;                /* traceable global event id */
+    uint32_t     sequence;               /* publisher-local sequence */
+    uint8_t      priority;
+    uint8_t      sourceTask;
+    uint8_t      reserved[2];
     uint8_t      payload[EVENT_PAYLOAD_SIZE];
 } Event_t;
+
+typedef struct {
+    uint32_t published;
+    uint32_t delivered;
+    uint32_t dropped;
+    uint8_t  subscribers;
+    uint8_t  maxQueueDepth;
+} BusTopicStats_t;
 
 /* Convenience: cast payload to a typed pointer */
 #define EVENT_PAYLOAD(evt, type)   ((type *)((evt)->payload))
@@ -60,6 +74,12 @@ BaseType_t Bus_Subscribe(EventTopic_t topic, QueueHandle_t rxQueue);
 BaseType_t Bus_Publish(const Event_t *event);
 
 /**
+ * Bus_PublishWithCount - like Bus_Publish, but also reports how many
+ * subscriber queues accepted the event. Useful for ref-counted payloads.
+ */
+BaseType_t Bus_PublishWithCount(const Event_t *event, uint8_t *sentCount);
+
+/**
  * Bus_PublishFromISR - ISR-safe variant.
  * pxHigherPriorityTaskWoken follows FreeRTOS convention.
  */
@@ -70,5 +90,12 @@ BaseType_t Bus_PublishFromISR(const Event_t *event,
  * Bus_GetDropCount - total events dropped due to full subscriber queues.
  */
 uint32_t Bus_GetDropCount(void);
+
+/**
+ * Bus_GetSubscriberCount - current subscriber count for a topic. Useful when
+ * publishing ref-counted zero-copy payload pointers.
+ */
+uint8_t Bus_GetSubscriberCount(EventTopic_t topic);
+BaseType_t Bus_GetTopicStats(EventTopic_t topic, BusTopicStats_t *outStats);
 
 #endif /* EVENT_BUS_H */
