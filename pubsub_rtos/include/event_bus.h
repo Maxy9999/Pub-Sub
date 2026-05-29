@@ -33,8 +33,21 @@ typedef enum {
 typedef struct {
     EventTopic_t topic;
     TickType_t   timestamp;              /* xTaskGetTickCount() at publish */
+    uint32_t     eventId;                /* traceable global event id */
+    uint32_t     sequence;               /* publisher-local sequence */
+    uint8_t      priority;
+    uint8_t      sourceTask;
+    uint8_t      reserved[2];
     uint8_t      payload[EVENT_PAYLOAD_SIZE];
 } Event_t;
+
+typedef struct {
+    uint32_t published;
+    uint32_t delivered;
+    uint32_t dropped;
+    uint8_t  subscribers;
+    uint8_t  maxQueueDepth;
+} BusTopicStats_t;
 
 /* Convenience: cast payload to a typed pointer */
 #define EVENT_PAYLOAD(evt, type)   ((type *)((evt)->payload))
@@ -83,5 +96,6 @@ uint32_t Bus_GetDropCount(void);
  * publishing ref-counted zero-copy payload pointers.
  */
 uint8_t Bus_GetSubscriberCount(EventTopic_t topic);
+BaseType_t Bus_GetTopicStats(EventTopic_t topic, BusTopicStats_t *outStats);
 
 #endif /* EVENT_BUS_H */

@@ -20,7 +20,11 @@ APP_SRCS  := $(SRC_DIR)/main.c       \
              $(SRC_DIR)/event_bus.c  \
              $(SRC_DIR)/watchdog_task.c \
              $(SRC_DIR)/payload_pool.c \
+             $(SRC_DIR)/storage_backend_posix.c \
              $(SRC_DIR)/runtime_config.c \
+             $(SRC_DIR)/command_parser.c \
+             $(SRC_DIR)/telemetry_encoder.c \
+             $(SRC_DIR)/fault_manager.c \
              $(SRC_DIR)/app_tasks.c
 
 # ── FreeRTOS kernel sources ────────────────────────────────────────────
@@ -54,7 +58,7 @@ LDFLAGS := -lpthread
 OBJS := $(patsubst %.c, $(BUILD)/%.o, $(ALL_SRCS))
 
 # ── Rules ──────────────────────────────────────────────────────────────
-.PHONY: all run clean
+.PHONY: all run clean test
 
 all: $(BUILD)/$(TARGET)
 
@@ -75,3 +79,17 @@ run: all
 clean:
 	rm -rf $(BUILD)
 	@echo "Cleaned."
+
+
+TEST_TARGET := $(BUILD)/middleware_tests
+TEST_SRCS := tests/test_middleware.c \
+             $(SRC_DIR)/command_parser.c \
+             $(SRC_DIR)/telemetry_encoder.c
+
+$(TEST_TARGET): $(TEST_SRCS)
+	@mkdir -p $(BUILD)
+	@echo "  CC  $@"
+	@$(CC) $(CFLAGS) $(TEST_SRCS) -o $@
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)

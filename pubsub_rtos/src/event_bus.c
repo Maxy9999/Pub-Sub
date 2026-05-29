@@ -16,11 +16,22 @@ typedef struct {
     QueueHandle_t    subscribers[MAX_SUBSCRIBERS_PER_TOPIC];
     uint8_t          count;
     SemaphoreHandle_t lock;
+    BusTopicStats_t stats;
 } TopicEntry_t;
 
 static TopicEntry_t      s_registry[TOPIC_MAX];
 static SemaphoreHandle_t s_dropLock;
 static uint32_t          s_dropCount = 0;
+static uint32_t          s_nextEventId = 1;
+
+static uint32_t allocateEventId(void)
+{
+    uint32_t id;
+    xSemaphoreTake(s_dropLock, portMAX_DELAY);
+    id = s_nextEventId++;
+    xSemaphoreGive(s_dropLock);
+    return id;
+}
 
 static void incrementDropCount(void)
 {
@@ -34,6 +45,7 @@ void Bus_Init(void)
 {
     memset(s_registry, 0, sizeof(s_registry));
     s_dropCount = 0;
+    s_nextEventId = 1;
     s_dropLock = xSemaphoreCreateMutex();
     configASSERT(s_dropLock != NULL);
 
@@ -63,6 +75,7 @@ BaseType_t Bus_Subscribe(EventTopic_t topic, QueueHandle_t rxQueue)
     }
 
     entry->subscribers[entry->count++] = rxQueue;
+    entry->stats.subscribers = entry->count;
     printf("[BUS] Subscribed to topic %d (slot %d)\n", topic, entry->count - 1);
 
     xSemaphoreGive(entry->lock);
@@ -83,15 +96,28 @@ BaseType_t Bus_PublishWithCount(const Event_t *event, uint8_t *sentCount)
     TopicEntry_t *entry = &s_registry[event->topic];
     BaseType_t result = pdPASS;
     uint8_t accepted = 0;
+    Event_t routedEvent = *event;
+
+    if (routedEvent.eventId == 0U) {
+        routedEvent.eventId = allocateEventId();
+    }
 
     xSemaphoreTake(entry->lock, portMAX_DELAY);
+    entry->stats.published++;
+    entry->stats.subscribers = entry->count;
 
     for (uint8_t i = 0; i < entry->count; i++) {
         /* Non-blocking: never stall publisher for a slow subscriber. */
-        if (xQueueSend(entry->subscribers[i], event, 0) == pdPASS) {
+        if (xQueueSend(entry->subscribers[i], &routedEvent, 0) == pdPASS) {
+            UBaseType_t depth = uxQueueMessagesWaiting(entry->subscribers[i]);
             accepted++;
+            entry->stats.delivered++;
+            if (depth > entry->stats.maxQueueDepth) {
+                entry->stats.maxQueueDepth = (uint8_t)depth;
+            }
         } else {
             incrementDropCount();
+            entry->stats.dropped++;
             printf("[BUS] WARN: dropped event topic=%d for subscriber %d "
                    "(total drops=%lu)\n",
                    event->topic, i, (unsigned long)Bus_GetDropCount());
@@ -120,10 +146,16 @@ BaseType_t Bus_PublishFromISR(const Event_t *event,
 
     /* ISR path intentionally does not take a mutex. Subscriptions are created
      * before the scheduler starts and remain stable at runtime. */
+    entry->stats.published++;
+    entry->stats.subscribers = entry->count;
+
     for (uint8_t i = 0; i < entry->count; i++) {
         if (xQueueSendFromISR(entry->subscribers[i], event,
-                              pxHigherPriorityTaskWoken) != pdPASS) {
+                              pxHigherPriorityTaskWoken) == pdPASS) {
+            entry->stats.delivered++;
+        } else {
             s_dropCount++;
+            entry->stats.dropped++;
             result = pdFAIL;
         }
     }
@@ -155,4 +187,17 @@ uint8_t Bus_GetSubscriberCount(EventTopic_t topic)
     xSemaphoreGive(entry->lock);
 
     return count;
+}
+
+
+BaseType_t Bus_GetTopicStats(EventTopic_t topic, BusTopicStats_t *outStats)
+{
+    configASSERT(topic < TOPIC_MAX);
+    configASSERT(outStats != NULL);
+
+    TopicEntry_t *entry = &s_registry[topic];
+    xSemaphoreTake(entry->lock, portMAX_DELAY);
+    *outStats = entry->stats;
+    xSemaphoreGive(entry->lock);
+    return pdPASS;
 }
