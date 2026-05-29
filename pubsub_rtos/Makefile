@@ -19,6 +19,8 @@ CFG_DIR   := freertos_config
 APP_SRCS  := $(SRC_DIR)/main.c       \
              $(SRC_DIR)/event_bus.c  \
              $(SRC_DIR)/watchdog_task.c \
+             $(SRC_DIR)/payload_pool.c \
+             $(SRC_DIR)/runtime_config.c \
              $(SRC_DIR)/app_tasks.c
 
 # ── FreeRTOS kernel sources ────────────────────────────────────────────

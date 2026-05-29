@@ -9,10 +9,11 @@
 #include "event_bus.h"
 #include "watchdog_task.h"
 #include "app_tasks.h"
+#include "payload_pool.h"
+#include "runtime_config.h"
 
 #define TASK_QUEUE_DEPTH        12
-#define TEMP_THRESHOLD_DEFAULT  35U
-#define VOLTAGE_LOW_THRESHOLD  33U
+#define FRAME_BYTES             (1920UL * 1080UL * 2UL)
 
 static QueueHandle_t s_loggerQueue;
 static QueueHandle_t s_storageQueue;
@@ -20,7 +21,8 @@ static QueueHandle_t s_cloudQueue;
 static QueueHandle_t s_configQueue;
 static QueueHandle_t s_healthQueue;
 
-static uint8_t s_tempThreshold = TEMP_THRESHOLD_DEFAULT;
+static uint8_t s_dmaFrameA[64];
+static uint8_t s_dmaFrameB[64];
 
 static const char *topicName[] = {
     "TEMP_UPDATE",
@@ -39,7 +41,8 @@ static const char *topicName[] = {
     "DIAGNOSTIC_REPORT",
     "POWER_EVENT",
     "OTA_EVENT",
-    "SECURITY_EVENT"
+    "SECURITY_EVENT",
+    "FRAME_READY"
 };
 
 static const char *topicToString(EventTopic_t topic)
@@ -68,6 +71,47 @@ static inline void sendHeartbeat(TaskID_t id)
     publishSimple(TOPIC_HEARTBEAT, (uint8_t)id, 0);
 }
 
+static void publishFrameReady(uint32_t sequence)
+{
+    EventPayload_t *frame = Pool_Alloc();
+    if (frame == NULL) {
+        publishSimple(TOPIC_SYSTEM_FAULT, TASK_ID_SENSOR_MANAGER, 1);
+        return;
+    }
+
+    frame->framePtr = (sequence & 1U) ? s_dmaFrameA : s_dmaFrameB;
+    frame->frameSize = FRAME_BYTES;
+    frame->sequence = sequence;
+    frame->sourceId = 1;
+
+    uint8_t subscriberCount = Bus_GetSubscriberCount(TOPIC_FRAME_READY);
+    if (subscriberCount == 0U) {
+        Pool_Free(frame);
+        return;
+    }
+
+    Pool_SetRefCount(frame, subscriberCount);
+
+    Event_t evt = {
+        .topic     = TOPIC_FRAME_READY,
+        .timestamp = xTaskGetTickCount(),
+        .payload   = {0}
+    };
+    memcpy(evt.payload, &frame, sizeof(frame));
+
+    uint8_t sentCount = 0;
+    Bus_PublishWithCount(&evt, &sentCount);
+    for (uint8_t i = sentCount; i < subscriberCount; i++) {
+        Pool_Free(frame);
+    }
+
+    printf("[SENSOR_MANAGER] frame ready seq=%lu bytes=%lu refs=%u sent=%u\n",
+           (unsigned long)frame->sequence,
+           (unsigned long)frame->frameSize,
+           subscriberCount,
+           sentCount);
+}
+
 /*
  * SensorManagerTask
  * Publishes legacy TEMP_UPDATE plus richer SENSOR_READING events.
@@ -78,10 +122,15 @@ static void prvSensorManagerTask(void *pvParams)
     (void)pvParams;
     uint8_t temperature = 25;
     uint8_t humidity = 45;
+    uint32_t frameSeq = 0;
+    TickType_t lastFrameTick = 0;
 
     printf("[SENSOR_MANAGER] Started\n");
 
     for (;;) {
+        DeviceConfig_t config;
+        Config_GetSnapshot(&config);
+
         int tempDelta = (rand() % 5) - 2;
         int humidityDelta = (rand() % 7) - 3;
 
@@ -107,13 +156,19 @@ static void prvSensorManagerTask(void *pvParams)
         humidityEvt.payload[2] = 2; /* percent RH */
         Bus_Publish(&humidityEvt);
 
-        if (temperature > s_tempThreshold) {
+        if (temperature > config.tempThreshold) {
             publishSimple(TOPIC_THRESHOLD_CROSSED, 1, temperature);
             printf("[SENSOR_MANAGER] Threshold crossed: temp=%u limit=%u\n",
-                   temperature, s_tempThreshold);
+                   temperature, config.tempThreshold);
         } else {
             printf("[SENSOR_MANAGER] temp=%uC humidity=%u%%\n",
                    temperature, humidity);
+        }
+
+        TickType_t now = xTaskGetTickCount();
+        if ((now - lastFrameTick) >= pdMS_TO_TICKS(config.framePeriodMs)) {
+            lastFrameTick = now;
+            publishFrameReady(++frameSeq);
         }
 
         sendHeartbeat(TASK_ID_SENSOR_MANAGER);
@@ -135,7 +190,7 @@ static void prvCommandTask(void *pvParams)
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
-        commandId = (uint8_t)((commandId + 1) % 6);
+        commandId = (uint8_t)((commandId + 1) % 8);
 
         publishSimple(TOPIC_COMMAND_RECEIVED, commandId, 0);
 
@@ -160,9 +215,17 @@ static void prvCommandTask(void *pvParams)
             publishSimple(TOPIC_SECURITY_EVENT, 1, 0); /* invalid token */
             printf("[COMMAND] Invalid command token detected\n");
             break;
+        case 5:
+            publishSimple(TOPIC_CONFIG_UPDATE, 2, 4); /* diagnostics period seconds */
+            printf("[COMMAND] SET_DIAGNOSTIC_PERIOD 4s\n");
+            break;
+        case 6:
+            publishSimple(TOPIC_CONFIG_UPDATE, 3, 34); /* low voltage threshold */
+            printf("[COMMAND] SET_LOW_VOLTAGE 3.4V\n");
+            break;
         default:
-            publishSimple(TOPIC_ACTUATOR_STATUS, 1, 0); /* fan idle/ok */
-            printf("[COMMAND] GET_ACTUATOR_STATUS\n");
+            publishSimple(TOPIC_CONFIG_UPDATE, 4, 2); /* frame period seconds */
+            printf("[COMMAND] SET_FRAME_PERIOD 2s\n");
             break;
         }
 
@@ -219,7 +282,10 @@ static void prvPowerMonitorTask(void *pvParams)
         reading.payload[2] = 3; /* decivolts */
         Bus_Publish(&reading);
 
-        if (voltageDecivolts < VOLTAGE_LOW_THRESHOLD) {
+        DeviceConfig_t config;
+        Config_GetSnapshot(&config);
+
+        if (voltageDecivolts < config.lowVoltageDecivolts) {
             publishSimple(TOPIC_POWER_EVENT, 1, voltageDecivolts);
             printf("[POWER] LOW_BATTERY voltage=%u.%uV\n",
                    voltageDecivolts / 10, voltageDecivolts % 10);
@@ -249,14 +315,18 @@ static void prvDiagnosticsTask(void *pvParams)
         report.payload[1] = (uint8_t)uxQueueMessagesWaiting(s_loggerQueue);
         report.payload[2] = (uint8_t)uxQueueMessagesWaiting(s_storageQueue);
         report.payload[3] = (uint8_t)uxQueueMessagesWaiting(s_cloudQueue);
+        report.payload[4] = Pool_GetFreeCount();
         Bus_Publish(&report);
 
-        printf("[DIAGNOSTICS] drops=%u loggerQ=%u storageQ=%u cloudQ=%u\n",
+        DeviceConfig_t config;
+        Config_GetSnapshot(&config);
+
+        printf("[DIAGNOSTICS] drops=%u loggerQ=%u storageQ=%u cloudQ=%u poolFree=%u\n",
                report.payload[0], report.payload[1],
-               report.payload[2], report.payload[3]);
+               report.payload[2], report.payload[3], report.payload[4]);
 
         sendHeartbeat(TASK_ID_DIAGNOSTICS);
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(config.diagnosticPeriodMs));
     }
 }
 
@@ -276,6 +346,17 @@ static void prvStorageTask(void *pvParams)
                    (unsigned long)storedCount,
                    topicToString(evt.topic),
                    evt.payload[0]);
+
+            if (evt.topic == TOPIC_FRAME_READY) {
+                EventPayload_t *frame = NULL;
+                memcpy(&frame, evt.payload, sizeof(frame));
+                if (frame != NULL) {
+                    printf("[STORAGE] indexed frame seq=%lu bytes=%lu\n",
+                           (unsigned long)frame->sequence,
+                           (unsigned long)frame->frameSize);
+                    Pool_Free(frame);
+                }
+            }
 
             if ((storedCount % 5U) == 0U) {
                 publishSimple(TOPIC_STORAGE_LOG, (uint8_t)storedCount, 0);
@@ -304,6 +385,15 @@ static void prvCloudTask(void *pvParams)
 
             if (evt.topic == TOPIC_ACTUATOR_COMMAND) {
                 publishSimple(TOPIC_ACTUATOR_STATUS, evt.payload[0], 1);
+            } else if (evt.topic == TOPIC_FRAME_READY) {
+                EventPayload_t *frame = NULL;
+                memcpy(&frame, evt.payload, sizeof(frame));
+                if (frame != NULL) {
+                    printf("[CLOUD] streamed frame seq=%lu bytes=%lu\n",
+                           (unsigned long)frame->sequence,
+                           (unsigned long)frame->frameSize);
+                    Pool_Free(frame);
+                }
             }
         }
         sendHeartbeat(TASK_ID_CLOUD);
@@ -320,10 +410,40 @@ static void prvConfigManagerTask(void *pvParams)
 
     for (;;) {
         if (xQueueReceive(s_configQueue, &evt, pdMS_TO_TICKS(1000)) == pdPASS) {
-            if ((evt.topic == TOPIC_CONFIG_UPDATE) && (evt.payload[0] == 1)) {
-                s_tempThreshold = evt.payload[1];
-                publishSimple(TOPIC_DEVICE_STATUS, 1, s_tempThreshold);
-                printf("[CONFIG] Applied temp threshold=%u\n", s_tempThreshold);
+            if (evt.topic == TOPIC_CONFIG_UPDATE) {
+                BaseType_t result = pdFAIL;
+                DeviceConfig_t config;
+
+                switch (evt.payload[0]) {
+                case 1:
+                    result = Config_SetTempThreshold(evt.payload[1]);
+                    printf("[CONFIG] Applied temp threshold=%u result=%s\n",
+                           evt.payload[1], result == pdPASS ? "ok" : "fail");
+                    break;
+                case 2:
+                    result = Config_SetDiagnosticPeriodMs((uint32_t)evt.payload[1] * 1000UL);
+                    printf("[CONFIG] Applied diagnostic period=%us result=%s\n",
+                           evt.payload[1], result == pdPASS ? "ok" : "fail");
+                    break;
+                case 3:
+                    result = Config_SetLowVoltageThreshold(evt.payload[1]);
+                    printf("[CONFIG] Applied low voltage=%u.%uV result=%s\n",
+                           evt.payload[1] / 10, evt.payload[1] % 10,
+                           result == pdPASS ? "ok" : "fail");
+                    break;
+                case 4:
+                    result = Config_SetFramePeriodMs((uint32_t)evt.payload[1] * 1000UL);
+                    printf("[CONFIG] Applied frame period=%us result=%s\n",
+                           evt.payload[1], result == pdPASS ? "ok" : "fail");
+                    break;
+                default:
+                    break;
+                }
+
+                Config_GetSnapshot(&config);
+                publishSimple(TOPIC_DEVICE_STATUS,
+                              result == pdPASS ? 1U : 2U,
+                              config.tempThreshold);
             }
         }
         sendHeartbeat(TASK_ID_CONFIG_MANAGER);
@@ -380,6 +500,18 @@ static void prvLoggerTask(void *pvParams)
                        (unsigned long)evt.timestamp,
                        topicToString(evt.topic),
                        evt.payload[0], evt.payload[1], evt.payload[2]);
+
+                if (evt.topic == TOPIC_FRAME_READY) {
+                    EventPayload_t *frame = NULL;
+                    memcpy(&frame, evt.payload, sizeof(frame));
+                    if (frame != NULL) {
+                        printf("[LOGGER]       frame seq=%lu bytes=%lu ptr=%p\n",
+                               (unsigned long)frame->sequence,
+                               (unsigned long)frame->frameSize,
+                               frame->framePtr);
+                        Pool_Free(frame);
+                    }
+                }
             }
         }
         sendHeartbeat(TASK_ID_LOGGER);
@@ -397,6 +529,9 @@ static void subscribeLoggerToAllTopics(void)
 
 void AppTasks_Start(void)
 {
+    Pool_Init();
+    Config_Init();
+
     s_loggerQueue = xQueueCreate(TASK_QUEUE_DEPTH * 3, sizeof(Event_t));
     s_storageQueue = xQueueCreate(TASK_QUEUE_DEPTH * 2, sizeof(Event_t));
     s_cloudQueue = xQueueCreate(TASK_QUEUE_DEPTH * 2, sizeof(Event_t));
@@ -414,6 +549,7 @@ void AppTasks_Start(void)
     Bus_Subscribe(TOPIC_SECURITY_EVENT,      s_storageQueue);
     Bus_Subscribe(TOPIC_ACTUATOR_STATUS,     s_storageQueue);
     Bus_Subscribe(TOPIC_DIAGNOSTIC_REPORT,   s_storageQueue);
+    Bus_Subscribe(TOPIC_FRAME_READY,         s_storageQueue);
 
     Bus_Subscribe(TOPIC_SENSOR_READING,      s_cloudQueue);
     Bus_Subscribe(TOPIC_DEVICE_STATUS,       s_cloudQueue);
@@ -422,6 +558,7 @@ void AppTasks_Start(void)
     Bus_Subscribe(TOPIC_ACTUATOR_STATUS,     s_cloudQueue);
     Bus_Subscribe(TOPIC_ACTUATOR_COMMAND,    s_cloudQueue);
     Bus_Subscribe(TOPIC_NETWORK_STATUS,      s_cloudQueue);
+    Bus_Subscribe(TOPIC_FRAME_READY,         s_cloudQueue);
 
     Bus_Subscribe(TOPIC_CONFIG_UPDATE,       s_configQueue);
 
