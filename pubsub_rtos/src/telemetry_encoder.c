@@ -11,7 +11,7 @@ const char *Telemetry_TopicName(EventTopic_t topic)
         "ACTUATOR_STATUS", "STORAGE_LOG", "NETWORK_STATUS",
         "DIAGNOSTIC_REPORT", "POWER_EVENT", "OTA_EVENT",
         "SECURITY_EVENT", "FRAME_READY"
-    };
+    };//?mapping of event topics to human-readable strings for telemetry encoding, used in JSON output and logging
 
     if (topic < TOPIC_MAX) {
         return names[topic];
@@ -19,7 +19,7 @@ const char *Telemetry_TopicName(EventTopic_t topic)
     return "UNKNOWN";
 }
 
-int Telemetry_EncodeJson(const Event_t *event, char *out, size_t outSize)
+int Telemetry_EncodeJson(const Event_t *event, char *out, size_t outSize)//?
 {
     if ((event == NULL) || (out == NULL) || (outSize == 0U)) {
         return -1;

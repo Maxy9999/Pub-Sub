@@ -58,7 +58,7 @@ typedef struct {
 #define COMMAND_ID_BUTTON              3U
 #define COMMAND_ID_OTA                 4U
 #define COMMAND_ID_SECURITY_EVENT      5U
-#define COMMAND_ID_GET_STATUS          6U
+#define COMMAND_ID_GET_STATUS          6U//cbu
 
 static inline void Event_Pack(Event_t *event, const void *src, uint8_t size)
 {

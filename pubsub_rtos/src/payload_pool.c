@@ -71,14 +71,14 @@ void Pool_AddRef(EventPayload_t *payload)
     xSemaphoreGive(s_poolLock);
 }
 
-void Pool_SetRefCount(EventPayload_t *payload, uint8_t refCount)
+void Pool_SetRefCount(EventPayload_t *payload, uint8_t refCount)//what's the use case for setting ref count directly instead of just adding ref?
 {
     if ((payload == NULL) || (refCount == 0U)) {
         return;
     }
 
     xSemaphoreTake(s_poolLock, portMAX_DELAY);
-    int index = blockIndexFromPayload(payload);
+    int index = blockIndexFromPayload(payload);//find the block index for the given payload pointer
     if ((index >= 0) && s_blocks[index].inUse) {
         s_blocks[index].refCount = refCount;
     }

@@ -9,7 +9,7 @@ typedef struct {
     uint8_t commandId;
     uint8_t targetId;
     uint32_t value;
-} ParsedCommand_t;
+} ParsedCommand_t;// similar to CommandPayload_t
 
 int CommandParser_Parse(const char *line, ParsedCommand_t *outCommand);
 

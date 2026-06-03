@@ -1,0 +1,25 @@
+In README.md: "I chose non-blocking publish with drop counting over blocking publish because in a real-time system a slow consumer must never stall a fast producer. The tradeoff is that dropped events are silent from the producer's perspective — mitigated by the drop counter and the stats task. In a system where no drops are acceptable, the design would need per-topic flow control."
+
+The reason for that final re-stamp is defensive paranoia: it prevents any future refactor from accidentally saving a struct where those fields diverged.
+The CRC algorithm used is standard CRC-32 with the reflected polynomial 0xEDB88320, which is the same polynomial used in Ethernet and ZIP. It's a genuine error-detection CRC, not a weak checksum — it catches all single-bit errors and most multi-bit corruption.
+
+This pattern — detect by size, validate by integrity field, copy shared fields, default the new ones — is how real firmware handles NVM upgrades across OTA updates without wiping user settings.
+
+There is a single module-global mutex s_configLock. Every read or write to s_config goes through xSemaphoreTake/xSemaphoreGive. The snapshot pattern in Config_GetSnapshot — take lock, copy entire struct to caller's buffer, release lock — is deliberate. It means callers never hold the lock while they're processing the config, which keeps the critical section duration minimal and prevents priority inversion scenarios from propagating widely.
+
+The payload pool solves this with a fixed pool of pre-allocated EventPayload_t descriptors. A publisher allocates one descriptor, writes its data pointer and metadata into it, and then the event bus hands the same pointer to every subscriber. Nobody copies the data — they all read from the same descriptor. When each subscriber is done, it calls Pool_Free. The block only actually gets returned to the pool when the last subscriber frees it. This is reference counting.
+
+{{{
+The Block Layout
+Internally, the pool is an array of PayloadBlock_t, which wraps an EventPayload_t alongside two control bytes: inUse (is this slot occupied at all?) and refCount (how many holders currently have this pointer?). This wrapper is not exposed outside the .c file — callers only ever see EventPayload_t *.
+The pool is statically sized at 8 blocks. That's a hard ceiling: if all 8 are in-flight simultaneously, Pool_Alloc returns NULL. Callers have to handle that. This is intentional embedded design — it makes memory usage totally deterministic and analyzable at compile time, unlike malloc.
+The Lifecycle
+
+Alloc: A free block is found by linear scan. inUse is set to 1, refCount to 1. The descriptor is zero-initialized.
+AddRef: Before the event bus dispatches to each subscriber, it increments the refcount once per subscriber. This is why Pool_SetRefCount exists as a batch optimization — instead of calling Pool_AddRef in a loop (acquiring and releasing the mutex once per subscriber), the broker can call Pool_SetRefCount once with the final count.
+Free: Each subscriber calls Pool_Free when done. The refcount decrements. When it hits 1, the block is zeroed and marked free. The memset on free is defensive — it prevents stale pointer data from lingering in the pool, which would otherwise create hard-to-debug use-after-free symptoms.
+
+The "foreign payload" warning path in Pool_Free is also worth noting: if someone passes a pointer that doesn't point into s_blocks, the linear scan in blockIndexFromPayload returns -1, and rather than silently corrupting state, the code logs a warning. In a real device this would likely escalate to a fault.
+Your Inline Question About Pool_SetRefCount
+The comment in the source asks exactly the right question. Pool_AddRef in a loop is correct but inefficient: N subscribers means N mutex acquisitions. Pool_SetRefCount lets the broker compute the final subscriber count first, then set it in a single critical section. It's a batch optimization for the common dispatch path. The constraint is that it can only be used safely before any subscriber has had a chance to call Pool_Free, otherwise you'd be overwriting a count that's already been decremented.
+}}}

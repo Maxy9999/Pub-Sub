@@ -9,7 +9,7 @@
 #include "event_bus.h"
 
 /* -- Config ------------------------------------------------------------- */
-#define MAX_SUBSCRIBERS_PER_TOPIC   6
+#define MAX_SUBSCRIBERS_PER_TOPIC   6//cbu
 
 /* -- Internal registry -------------------------------------------------- */
 typedef struct {
@@ -85,7 +85,7 @@ BaseType_t Bus_Subscribe(EventTopic_t topic, QueueHandle_t rxQueue)
 /* -- Bus_Publish -------------------------------------------------------- */
 BaseType_t Bus_Publish(const Event_t *event)
 {
-    return Bus_PublishWithCount(event, NULL);
+    return Bus_PublishWithCount(event, NULL);//cbu
 }
 
 BaseType_t Bus_PublishWithCount(const Event_t *event, uint8_t *sentCount)

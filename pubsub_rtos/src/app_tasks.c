@@ -58,31 +58,31 @@ static void publishSimpleFrom(TaskID_t source, EventTopic_t topic,
     evt.payload[0] = value0;
     evt.payload[1] = value1;
     Bus_Publish(&evt);
-}
+}//good modularity
 
 static void publishSimple(EventTopic_t topic, uint8_t value0, uint8_t value1)
 {
     publishSimpleFrom(TASK_ID_HEALTH_MANAGER, topic, EVENT_PRIORITY_NORMAL,
-                      value0, value1);
+                      value0, value1);//why health id manager
 }
 
 static inline void sendHeartbeat(TaskID_t id)
 {
-    publishSimpleFrom(id, TOPIC_HEARTBEAT, EVENT_PRIORITY_LOW, (uint8_t)id, 0);
+    publishSimpleFrom(id, TOPIC_HEARTBEAT, EVENT_PRIORITY_LOW, (uint8_t)id, 0);//why 0
 }
 
-static void publishFrameReady(uint32_t sequence)
+static void publishFrameReady(uint32_t sequence)//whats sequence
 {
     EventPayload_t *frame = Pool_Alloc();
     if (frame == NULL) {
-        publishSimple(TOPIC_SYSTEM_FAULT, TASK_ID_SENSOR_MANAGER, 1);
-        return;
+        publishSimple(TOPIC_SYSTEM_FAULT, TASK_ID_SENSOR_MANAGER, 1);//why sensor manager
+        return;//nice, publish a system fault and return without publishing frame ready
     }
 
-    frame->framePtr = (sequence & 1U) ? s_dmaFrameA : s_dmaFrameB;
+    frame->framePtr = (sequence & 1U) ? s_dmaFrameA : s_dmaFrameB;//simulate alternating DMA buffers
     frame->frameSize = FRAME_BYTES;
     frame->sequence = sequence;
-    frame->sourceId = 1;
+    frame->sourceId = 1;//sensor id 1 for main camera
 
     uint8_t subscriberCount = Bus_GetSubscriberCount(TOPIC_FRAME_READY);
     if (subscriberCount == 0U) {
@@ -90,7 +90,7 @@ static void publishFrameReady(uint32_t sequence)
         return;
     }
 
-    Pool_SetRefCount(frame, subscriberCount);
+    Pool_SetRefCount(frame, subscriberCount);//set ref count to subscriber count so that frame is freed when all subscribers have processed it
 
     Event_t evt = makeEvent(TOPIC_FRAME_READY, TASK_ID_SENSOR_MANAGER,
                             EVENT_PRIORITY_HIGH);
@@ -198,7 +198,7 @@ static void prvCommandTask(void *pvParams)
         "SET low_voltage_dv 34",
         "SET frame_period_ms 2000",
         "GET status"
-    };
+    };//can be upgraded(cbu)
 
     printf("[COMMAND] Started\n");
 
@@ -227,7 +227,7 @@ static void prvCommandTask(void *pvParams)
                 Event_t cfgEvt = makeEvent(TOPIC_CONFIG_UPDATE, TASK_ID_COMMAND,
                                            EVENT_PRIORITY_HIGH);
                 Event_Pack(&cfgEvt, &configPayload, sizeof(configPayload));
-                Bus_Publish(&cfgEvt);
+                Bus_Publish(&cfgEvt);//event gen, packing, publishing
                 break;
             }
             case COMMAND_ID_ACTUATOR:
@@ -249,7 +249,7 @@ static void prvCommandTask(void *pvParams)
                 break;
             default:
                 publishSimpleFrom(TASK_ID_COMMAND, TOPIC_DEVICE_STATUS,
-                                  EVENT_PRIORITY_NORMAL, 0, 0);
+                                  EVENT_PRIORITY_NORMAL, 0, 0);//how the two values are assigned
                 break;
             }
 
@@ -276,7 +276,7 @@ static void prvNetworkTask(void *pvParams)
         publishSimpleFrom(TASK_ID_NETWORK, TOPIC_NETWORK_STATUS, EVENT_PRIORITY_NORMAL, online, online ? 1 : 0);
         printf("[NETWORK] link=%s mqtt=%s\n",
                online ? "up" : "down",
-               online ? "connected" : "disconnected");
+               online ? "connected(fake)" : "(fake)disconnected");
 
         if (online) {
             publishSimpleFrom(TASK_ID_NETWORK, TOPIC_COMMAND_RECEIVED, EVENT_PRIORITY_NORMAL, 10, 0); /* cloud poll */
@@ -284,7 +284,7 @@ static void prvNetworkTask(void *pvParams)
 
         online = (uint8_t)!online;
         sendHeartbeat(TASK_ID_NETWORK);
-        vTaskDelay(pdMS_TO_TICKS(6000));
+        vTaskDelay(pdMS_TO_TICKS(6000));//simulating behaviour(smb)
     }
 }
 
@@ -292,12 +292,12 @@ static void prvNetworkTask(void *pvParams)
 static void prvPowerMonitorTask(void *pvParams)
 {
     (void)pvParams;
-    uint8_t voltageDecivolts = 37;
+    uint8_t voltageDecivolts = 37;//cbu
 
     printf("[POWER] Started\n");
 
     for (;;) {
-        int delta = (rand() % 3) - 1;
+        int delta = (rand() % 3) - 1;//smb
         voltageDecivolts = (uint8_t)((voltageDecivolts + delta + 50) % 50);
         if (voltageDecivolts < 30) {
             voltageDecivolts = 37;
@@ -351,20 +351,20 @@ static void prvDiagnosticsTask(void *pvParams)
         report.payload[5] = (uint8_t)sensorStats.published;
         report.payload[6] = sensorStats.maxQueueDepth;
         Bus_Publish(&report);
-
-        DeviceConfig_t config;
-        Config_GetSnapshot(&config);
-
         printf("[DIAGNOSTICS] drops=%u loggerQ=%u storageQ=%u cloudQ=%u poolFree=%u sensorPub=%lu maxQ=%u\n",
                report.payload[0], report.payload[1],
                report.payload[2], report.payload[3], report.payload[4],
                (unsigned long)sensorStats.published, sensorStats.maxQueueDepth);
-
         sendHeartbeat(TASK_ID_DIAGNOSTICS);
+
+        DeviceConfig_t config;
+        Config_GetSnapshot(&config);
+        printf("[DIAGNOSTICS] waiting time in ms=%d\n", config.diagnosticPeriodMs);
         vTaskDelay(pdMS_TO_TICKS(config.diagnosticPeriodMs));
+        
     }
 }
-
+/********************************SUBSCRIBER TASKS************************************** */
 /* StorageTask persists important events and emits a STORAGE_LOG summary. */
 static void prvStorageTask(void *pvParams)
 {
@@ -381,7 +381,7 @@ static void prvStorageTask(void *pvParams)
             snprintf(logLine, sizeof(logLine),
                      "stored=%lu topic=%s event=%lu src=%u p0=%u",
                      (unsigned long)storedCount, topicToString(evt.topic),
-                     (unsigned long)evt.eventId, evt.sourceTask, evt.payload[0]);
+                     (unsigned long)evt.eventId, evt.sourceTask, evt.payload[0]);//how src is assigned?
             StorageBackend_AppendLog(logLine);
             printf("[STORAGE] %s\n", logLine);
 
@@ -514,7 +514,7 @@ static void prvHealthManagerTask(void *pvParams)
         }
         sendHeartbeat(TASK_ID_HEALTH_MANAGER);
     }
-}
+}//deviceState(constant, currently) is updated based on events and published as DEVICE_STATUS with reason and value for monitoring           
 
 /* LoggerTask subscribes to every topic and prints compact trace lines. */
 static void prvLoggerTask(void *pvParams)
@@ -586,7 +586,7 @@ void AppTasks_Start(void)
     Bus_Subscribe(TOPIC_SECURITY_EVENT,      s_storageQueue);
     Bus_Subscribe(TOPIC_ACTUATOR_STATUS,     s_storageQueue);
     Bus_Subscribe(TOPIC_DIAGNOSTIC_REPORT,   s_storageQueue);
-    Bus_Subscribe(TOPIC_FRAME_READY,         s_storageQueue);
+    Bus_Subscribe(TOPIC_FRAME_READY,         s_storageQueue);//cbu
 
     Bus_Subscribe(TOPIC_SENSOR_READING,      s_cloudQueue);
     Bus_Subscribe(TOPIC_DEVICE_STATUS,       s_cloudQueue);
@@ -595,25 +595,26 @@ void AppTasks_Start(void)
     Bus_Subscribe(TOPIC_ACTUATOR_STATUS,     s_cloudQueue);
     Bus_Subscribe(TOPIC_ACTUATOR_COMMAND,    s_cloudQueue);
     Bus_Subscribe(TOPIC_NETWORK_STATUS,      s_cloudQueue);
-    Bus_Subscribe(TOPIC_FRAME_READY,         s_cloudQueue);
+    Bus_Subscribe(TOPIC_FRAME_READY,         s_cloudQueue);//cbu
 
-    Bus_Subscribe(TOPIC_CONFIG_UPDATE,       s_configQueue);
+    Bus_Subscribe(TOPIC_CONFIG_UPDATE,       s_configQueue);//cbu
 
     Bus_Subscribe(TOPIC_SYSTEM_FAULT,        s_healthQueue);
     Bus_Subscribe(TOPIC_THRESHOLD_CROSSED,   s_healthQueue);
     Bus_Subscribe(TOPIC_NETWORK_STATUS,      s_healthQueue);
     Bus_Subscribe(TOPIC_POWER_EVENT,         s_healthQueue);
     Bus_Subscribe(TOPIC_DIAGNOSTIC_REPORT,   s_healthQueue);
-    Bus_Subscribe(TOPIC_SECURITY_EVENT,      s_healthQueue);
+    Bus_Subscribe(TOPIC_SECURITY_EVENT,      s_healthQueue);//cbu
 
-    xTaskCreate(prvSensorManagerTask, "SensorMgr", configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);
-    xTaskCreate(prvCommandTask,       "Command",   configMINIMAL_STACK_SIZE * 4, NULL, 4, NULL);
-    xTaskCreate(prvNetworkTask,       "Network",   configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
-    xTaskCreate(prvPowerMonitorTask,  "Power",     configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);
-    xTaskCreate(prvDiagnosticsTask,   "Diag",      configMINIMAL_STACK_SIZE * 4, NULL, 1, NULL);
-    xTaskCreate(prvStorageTask,       "Storage",   configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
-    xTaskCreate(prvCloudTask,         "Cloud",     configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
-    xTaskCreate(prvConfigManagerTask, "Config",    configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
-    xTaskCreate(prvHealthManagerTask, "Health",    configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);
-    xTaskCreate(prvLoggerTask,        "Logger",    configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);
+    
+    xTaskCreate(prvCommandTask,       "Command",   configMINIMAL_STACK_SIZE * 4, NULL, 4, NULL);//p
+    xTaskCreate(prvSensorManagerTask, "SensorMgr", configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);//p
+    xTaskCreate(prvPowerMonitorTask,  "Power",     configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);//p
+    xTaskCreate(prvHealthManagerTask, "Health",    configMINIMAL_STACK_SIZE * 4, NULL, 3, NULL);//s
+    xTaskCreate(prvNetworkTask,       "Network",   configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);//p
+    xTaskCreate(prvStorageTask,       "Storage",   configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);//s
+    xTaskCreate(prvCloudTask,         "Cloud",     configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);//s
+    xTaskCreate(prvConfigManagerTask, "Config",    configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);//s
+    xTaskCreate(prvLoggerTask,        "Logger",    configMINIMAL_STACK_SIZE * 4, NULL, 2, NULL);//s
+    xTaskCreate(prvDiagnosticsTask,   "Diag",      configMINIMAL_STACK_SIZE * 4, NULL, 1, NULL);//p
 }

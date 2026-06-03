@@ -33,7 +33,7 @@ uint32_t Config_Crc32ForTest(const void *data, uint32_t len)
         crc ^= bytes[i];
         for (uint8_t bit = 0; bit < 8U; bit++) {
             uint32_t mask = (uint32_t)(0U - (crc & 1U));
-            crc = (crc >> 1U) ^ (0xEDB88320UL & mask);
+            crc = (crc >> 1U) ^ (0xEDB88320UL & mask);//?standard CRC-32 algorithm with polynomial 0x04C11DB7 reflected as 0xEDB88320
         }
     }
 
@@ -52,7 +52,7 @@ static uint32_t configV1Checksum(const DeviceConfigV1_t *config)
     uint32_t sum = 0;
 
     for (size_t i = 0; i < len; i++) {
-        sum = (sum * 33U) ^ bytes[i];
+        sum = (sum * 33U) ^ bytes[i];//?simple checksum algorithm for v1 config, not CRC, just to detect corruption and validate migration source
     }
 
     return sum;
@@ -76,7 +76,7 @@ static BaseType_t configIsValid(const DeviceConfig_t *config)
 {
     if ((config->magic != CONFIG_MAGIC) ||
         (config->version != CONFIG_SCHEMA_VERSION) ||
-        (config->size != sizeof(*config))) {
+        (config->size != sizeof(*config))) {//?basic validation of config structure, check magic number, version, and size to ensure it's a valid config blob
         return pdFALSE;
     }
 

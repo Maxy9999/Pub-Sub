@@ -25,9 +25,10 @@ static FaultSeverity_t classifyFault(const Event_t *event)
     case TOPIC_SECURITY_EVENT:
         return FAULT_SEVERITY_ERROR;
     case TOPIC_POWER_EVENT:
-    case TOPIC_NETWORK_STATUS:
     case TOPIC_THRESHOLD_CROSSED:
         return event->payload[0] ? FAULT_SEVERITY_WARNING : FAULT_SEVERITY_INFO;
+    case TOPIC_NETWORK_STATUS:
+        return event->payload[0] ? FAULT_SEVERITY_INFO : FAULT_SEVERITY_WARNING;
     default:
         return FAULT_SEVERITY_INFO;
     }
@@ -70,7 +71,7 @@ BaseType_t FaultManager_HandleEvent(const Event_t *event, DeviceState_t *outStat
 
     if ((event->topic == s_lastTopic) &&
         (event->payload[0] == s_lastCode) &&
-        ((now - s_lastTick) < FAULT_DEBOUNCE_TICKS)) {
+        ((now - s_lastTick) < FAULT_DEBOUNCE_TICKS)) {//?debouncing logic, if same topic and code as last fault and within debounce time, then ignore
         accepted = pdFALSE;
     } else {
         s_lastTopic = event->topic;
@@ -83,12 +84,12 @@ BaseType_t FaultManager_HandleEvent(const Event_t *event, DeviceState_t *outStat
             s_history[s_next].topic = event->topic;
             s_history[s_next].code = event->payload[0];
             s_history[s_next].severity = severity;
-            s_next = (uint8_t)((s_next + 1U) % FAULT_HISTORY_DEPTH);
-        }
-    }
+            s_next = (uint8_t)((s_next + 1U) % FAULT_HISTORY_DEPTH);//?circular buffer for fault history
+        }//accepted a new fault, update current device state based on severity and add to history if not info
+    }//but, accepted is never being assigned pdTRUE, so device state will never be updated and history will never be added to, is this a bug?
 
     if (outState != NULL) {
-        *outState = s_state;
+        *outState = s_state;//update current device state based on fault severity
     }
 
     xSemaphoreGive(s_faultLock);
